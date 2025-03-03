@@ -1,0 +1,36 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "7a9e27744a982f5bc3bcd3552fd1062b"
+application_url = "https://settlement-wound-address-oo.trycloudflare.com"
+embedded = true
+name = "extensive-trade-app"
+handle = "extensive-trade-app-9"
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2025-01"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_products"
+
+[auth]
+redirect_urls = [
+  "https://settlement-wound-address-oo.trycloudflare.com/auth/callback",
+  "https://settlement-wound-address-oo.trycloudflare.com/auth/shopify/callback",
+  "https://settlement-wound-address-oo.trycloudflare.com/api/auth/callback"
+]
+
+[pos]
+embedded = false
