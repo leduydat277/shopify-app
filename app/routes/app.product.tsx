@@ -1,24 +1,32 @@
 import { json, LoaderFunctionArgs } from "@remix-run/node";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   ResourceList,
-  Text,
-  Link as PolarisLink,
+  TextField,
+  Select,
   Button,
-  Modal,
+  Card,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
-import { useLoaderData } from "@remix-run/react";
-import { EditProduct } from "app/component/EditProduct";
+
 import { Product } from "app/stores";
+import { FiltersWithAResourceList } from "app/component/Filters";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+  const cursor = url.searchParams.get("cursor");
+  const search = url.searchParams.get("search") || "";
+  const status = url.searchParams.get("status");
+  const minPrice = url.searchParams.get("minPrice");
+  const maxPrice = url.searchParams.get("maxPrice");
+
   const { admin } = await authenticate.admin(request);
 
   const GET_PRODUCTS_QUERY = `
-    query getProducts($first: Int!) {
-      products(first: $first) {
+    query getProducts($first: Int!, $cursor: String, $query: String) {
+      products(first: $first, after: $cursor, query: $query) {
         edges {
           node {
             id
@@ -33,85 +41,134 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             }
           }
         }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
   `;
 
-  const response = await admin.graphql(GET_PRODUCTS_QUERY, { variables: { first: 10 } });
+  let queryParts = [];
+  if (search) queryParts.push(`title:*${search}*`);
+  if (status) queryParts.push(`status:${status}`);
+  if (minPrice) queryParts.push(`variants.price:>=${minPrice}`);
+  if (maxPrice) queryParts.push(`variants.price:<=${maxPrice}`);
+
+  const query = queryParts.length ? queryParts.join(" AND ") : null;
+
+  const response = await admin.graphql(GET_PRODUCTS_QUERY, {
+    variables: { first: 10, cursor, query },
+  });
+
   const responseJson = await response.json();
+  const products = responseJson.data.products.edges.map((edge: any) => edge.node);
+  const hasNextPage = responseJson.data.products.pageInfo.hasNextPage;
+  const nextCursor = responseJson.data.products.pageInfo.endCursor;
 
-  const products: Product[] = responseJson.data.products.edges.map((edge: any) => edge.node);
-
-  return json({ products });
+  return json({ products, hasNextPage, nextCursor });
 };
 
 export default function ProductListPage() {
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const { products } = useLoaderData<typeof loader>();
-  console.log('products', products);
+  const fetcher = useFetcher();
+  const [products, setProducts] = useState<Product[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [search, setSearch] = useState<string>("");
+  const [status, setStatus] = useState<string>("");
+  const [minPrice, setMinPrice] = useState<string>("");
+  const [maxPrice, setMaxPrice] = useState<string>("");
 
+  const { products: initialProducts, hasNextPage, nextCursor: initialCursor } =
+    useLoaderData<typeof loader>();
 
-  const handleDeleteProduct = async (productId: string) => {
-    const confirmed = window.confirm("XOÁ SẢN PHẨM?");
-    if (!confirmed) return;
-  
-    try {
-      const response = await fetch("/app/api/delete-product", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ id: productId }),
-      });
-      const result = await response.json();
-      console.log("Product deleted:", result);
-      
-      window.location.reload();
-    } catch (error) {
-      console.error("Error deleting product:", error);
-    }
+  useEffect(() => {
+    setProducts(initialProducts);
+    setNextCursor(initialCursor);
+  }, [initialProducts, initialCursor]);
+
+  const loadMoreProducts = () => {
+    if (!nextCursor) return;
+    fetcher.load(
+      window.location.pathname + `?cursor=${nextCursor}&search=${search}&status=${status}&minPrice=${minPrice}&maxPrice=${maxPrice}`
+    );
   };
+
+  const handleSearch = () => {
+    const queryParams = new URLSearchParams();
+    if (search) queryParams.set("search", search);
+    if (status) queryParams.set("status", status);
+    if (minPrice) queryParams.set("minPrice", minPrice);
+    if (maxPrice) queryParams.set("maxPrice", maxPrice);
+
+    fetcher.load(window.location.pathname + `?${queryParams.toString()}`);
+  };
+
+  useEffect(() => {
+    if (fetcher.data?.products) {
+      setProducts(fetcher.data.products);
+      setNextCursor(fetcher.data.hasNextPage ? fetcher.data.nextCursor : null);
+    }
+  }, [fetcher.data]);
 
   return (
     <Page title="Danh sách sản phẩm">
-      <PolarisLink url="/app/create-product">THÊM SẢN PHẨM</PolarisLink>
+      {/* <FiltersWithAResourceList /> */}
+      <Card sectioned>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <TextField
+            label="Tìm kiếm sản phẩm"
+            value={search}
+            onChange={(value) => setSearch(value)}
+            onEnterPressed={handleSearch}
+          />
+          <Select
+            label="Trạng thái"
+            options={[
+              { label: "Tất cả", value: "" },
+              { label: "ACTIVE", value: "ACTIVE" },
+              { label: "DRAFT", value: "DRAFT" },
+            ]}
+            value={status}
+            onChange={(value) => setStatus(value)}
+          />
+          <TextField
+            label="Giá tối thiểu"
+            value={minPrice}
+            onChange={(value) => setMinPrice(value)}
+            type="number"
+          />
+          <TextField
+            label="Giá tối đa"
+            value={maxPrice}
+            onChange={(value) => setMaxPrice(value)}
+            type="number"
+          />
+          <Button onClick={handleSearch} primary>
+            Tìm kiếm
+          </Button>
+        </div>
+      </Card>
+
       <ResourceList
-        resourceName={{ singular: 'product', plural: 'products' }}
+        resourceName={{ singular: "product", plural: "products" }}
         items={products}
-        renderItem={(item: Product) => {
-          const price =
-            item.variants && item.variants.edges.length > 0
-              ? item.variants.edges[0].node.price
-              : "N/A";
-          return (
-            <ResourceList.Item id={item.id}>
-              <h3>
-                <Text variation="strong">{item.title}</Text>
-              </h3>
-              <div>Giá: {price}</div>
-              <div>Trạng thái: {item.status}</div>
-              <Button onClick={() => setEditingProduct(item)}>Sửa</Button>
-              <Button destructive onClick={() => handleDeleteProduct(item.id)}>
-                Xoá
-              </Button>
-            </ResourceList.Item>
-          );
-        }}
+        renderItem={(item: Product) => (
+          <ResourceList.Item id={item.id}>
+            <h3>
+              <strong>{item.title}</strong>
+            </h3>
+            <div>Giá: {item.variants?.edges?.[0]?.node.price || "N/A"}</div>
+            <div>Trạng thái: {item.status}</div>
+            <Button>Edit</Button>
+            <Button destructive>Xoá</Button>
+          </ResourceList.Item>
+        )}
       />
 
-      {editingProduct && (
-        <Modal
-          open={true}
-          onClose={() => setEditingProduct(null)}
-          title="Chỉnh sửa sản phẩm"
-        >
-          <Modal.Section>
-            <EditProduct
-              product={editingProduct}
-              onClose={() => setEditingProduct(null)}
-            />
-          </Modal.Section>
-        </Modal>
+      {nextCursor && (
+        <Button onClick={loadMoreProducts} loading={fetcher.state === "loading"}>
+          Tải thêm
+        </Button>
       )}
     </Page>
   );
