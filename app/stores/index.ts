@@ -1,5 +1,13 @@
-
-import { create } from "zustand";
+import { create } from 'zustand';
+import { shallow } from 'zustand/shallow';
+import { immer } from 'zustand/middleware/immer';
+import { createWithEqualityFn } from 'zustand/traditional';
+import {
+  persist,
+  subscribeWithSelector,
+  devtools,
+  createJSONStorage,
+} from 'zustand/middleware';
 
 export interface Product {
   id: string;
@@ -15,15 +23,31 @@ interface ProductState {
   setStatus: (status: string) => void;
 }
 
-export const useProductStore = create<ProductState>((set) => ({
+const intiProduct: Product = {
+  id: "",
+  title: "my-product", 
+  status: "ACTIVE",
+}
 
-  product: { id: "", title: "", status: "" },
-  
-  initialize: (product: Product) => set(() => ({ product })),
-  setId: (id: string) =>
-    set((state) => ({ product: { ...state.product, id } })),
-  setTitle: (title: string) =>
-    set((state) => ({ product: { ...state.product, title } })),
-  setStatus: (status: string) =>
-    set((state) => ({ product: { ...state.product, status } })),
-}));
+export const useProductStore = createWithEqualityFn(
+  devtools(
+    persist(
+      subscribeWithSelector(
+        immer<any>((set, get) => ({
+          ...intiProduct,
+          resetState: () => set({ ...intiProduct }),
+          setId:(id:String) =>set((state)=> {state.id = id}),
+          setTitle:(title:String) =>set((state)=> {state.title= title}),
+          setStatus:(status:String) =>set((state)=> {state.status = status}),
+          clear: () => set({ ...intiProduct }),
+        })
+      )
+    ),
+    {
+      name: 'product-store',
+      storage: createJSONStorage(() => localStorage)
+    }
+  )
+),
+shallow
+)
