@@ -1,37 +1,31 @@
 import { json, LoaderFunctionArgs } from "@remix-run/node";
-import { useState, useEffect } from "react";
-import { useFetcher, useLoaderData } from "@remix-run/react";
-import {
-  Page,
-  ResourceList,
-  TextField,
-  Select,
-  Button,
-  Card,
-} from "@shopify/polaris";
+import { useLoaderData, useSearchParams } from "@remix-run/react";
+import { Page } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
-
-import { Product } from "app/stores";
-import { FiltersWithAResourceList } from "app/component/Filters";
+import { IndexFiltersDefaultExample } from "app/component/IndexFilters";
+import { PaginationExample } from "app/component/Pagination";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const cursor = url.searchParams.get("cursor");
-  const search = url.searchParams.get("search") || "";
+  const direction = url.searchParams.get("direction") || "next";
+  const search = url.searchParams.get("title") || "";
   const status = url.searchParams.get("status");
-  const minPrice = url.searchParams.get("minPrice");
-  const maxPrice = url.searchParams.get("maxPrice");
-
+  const price = url.searchParams.get("price");
+  const sort = url.searchParams.get("sort") || "title asc";
+  const [sortKey, sortOrder] = sort.split(" ");
   const { admin } = await authenticate.admin(request);
 
   const GET_PRODUCTS_QUERY = `
-    query getProducts($first: Int!, $cursor: String, $query: String) {
-      products(first: $first, after: $cursor, query: $query) {
+    query getProducts($first: Int, $last: Int, $after: String, $before: String, $query: String, $sortKey: ProductSortKeys, $reverse: Boolean) {
+      products(first: $first, last: $last, after: $after, before: $before, query: $query, sortKey: $sortKey, reverse: $reverse) {
         edges {
+          cursor
           node {
             id
             title
             status
+            description
             variants(first: 1) {
               edges {
                 node {
@@ -43,6 +37,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
         pageInfo {
           hasNextPage
+          hasPreviousPage
+          startCursor
           endCursor
         }
       }
@@ -51,125 +47,69 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   let queryParts = [];
   if (search) queryParts.push(`title:*${search}*`);
+  if (price) queryParts.push(`variants.price:${price}`);
   if (status) queryParts.push(`status:${status}`);
-  if (minPrice) queryParts.push(`variants.price:>=${minPrice}`);
-  if (maxPrice) queryParts.push(`variants.price:<=${maxPrice}`);
 
   const query = queryParts.length ? queryParts.join(" AND ") : null;
 
-  const response = await admin.graphql(GET_PRODUCTS_QUERY, {
-    variables: { first: 10, cursor, query },
-  });
+  const variables = {
+    first: direction === "next" ? 2 : null,
+    last: direction === "previous" ? 2 : null,
+    after: direction === "next" ? cursor : null,
+    before: direction === "previous" ? cursor : null,
+    query,
+    sortKey: sortKey.toUpperCase(),
+    reverse: sortOrder === "desc",
+  };
+  console.log('variables', direction);
 
+  const response = await admin.graphql(GET_PRODUCTS_QUERY, { variables });
   const responseJson = await response.json();
-  const products = responseJson.data.products.edges.map((edge: any) => edge.node);
-  const hasNextPage = responseJson.data.products.pageInfo.hasNextPage;
-  const nextCursor = responseJson.data.products.pageInfo.endCursor;
 
-  return json({ products, hasNextPage, nextCursor });
+  if (responseJson.errors) {
+    console.error("GraphQL errors:", responseJson.errors);
+    throw new Error("Failed to fetch products");
+  }
+
+  const products = responseJson.data.products.edges.map((edge: any) => ({
+    ...edge.node,
+    cursor: edge.cursor,
+  }));
+  const pageInfo = responseJson.data.products.pageInfo;
+
+  return json({ products, pageInfo });
 };
 
 export default function ProductListPage() {
-  const fetcher = useFetcher();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [search, setSearch] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
-  const [minPrice, setMinPrice] = useState<string>("");
-  const [maxPrice, setMaxPrice] = useState<string>("");
+  const { products, pageInfo } = useLoaderData<typeof loader>();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const { products: initialProducts, hasNextPage, nextCursor: initialCursor } =
-    useLoaderData<typeof loader>();
-
-  useEffect(() => {
-    setProducts(initialProducts);
-    setNextCursor(initialCursor);
-  }, [initialProducts, initialCursor]);
-
-  const loadMoreProducts = () => {
-    if (!nextCursor) return;
-    fetcher.load(
-      window.location.pathname + `?cursor=${nextCursor}&search=${search}&status=${status}&minPrice=${minPrice}&maxPrice=${maxPrice}`
-    );
+  const updateCursor = (cursor: string, direction: "next" | "previous") => {
+    const params = new URLSearchParams(searchParams);
+    params.set("cursor", cursor);
+    params.set("direction", direction);
+    setSearchParams(params);
   };
 
-  const handleSearch = () => {
-    const queryParams = new URLSearchParams();
-    if (search) queryParams.set("search", search);
-    if (status) queryParams.set("status", status);
-    if (minPrice) queryParams.set("minPrice", minPrice);
-    if (maxPrice) queryParams.set("maxPrice", maxPrice);
-
-    fetcher.load(window.location.pathname + `?${queryParams.toString()}`);
+  const onPrevious = () => {
+    if (!pageInfo.hasPreviousPage || !pageInfo.startCursor) return;
+    updateCursor(pageInfo.startCursor, "previous");
   };
 
-  useEffect(() => {
-    if (fetcher.data?.products) {
-      setProducts(fetcher.data.products);
-      setNextCursor(fetcher.data.hasNextPage ? fetcher.data.nextCursor : null);
-    }
-  }, [fetcher.data]);
+  const onNext = () => {
+    if (!pageInfo.hasNextPage || !pageInfo.endCursor) return;
+    updateCursor(pageInfo.endCursor, "next");
+  };
+
+  console.log("startCursor:", pageInfo.startCursor);
+  console.log("endCursor:", pageInfo.endCursor);
+  console.log("hasNextPage:", pageInfo.hasNextPage);
+  console.log("hasPreviousPage:", pageInfo.hasPreviousPage);
 
   return (
-    <Page title="Danh sách sản phẩm">
-      {/* <FiltersWithAResourceList /> */}
-      <Card sectioned>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          <TextField
-            label="Tìm kiếm sản phẩm"
-            value={search}
-            onChange={(value) => setSearch(value)}
-            onEnterPressed={handleSearch}
-          />
-          <Select
-            label="Trạng thái"
-            options={[
-              { label: "Tất cả", value: "" },
-              { label: "ACTIVE", value: "ACTIVE" },
-              { label: "DRAFT", value: "DRAFT" },
-            ]}
-            value={status}
-            onChange={(value) => setStatus(value)}
-          />
-          <TextField
-            label="Giá tối thiểu"
-            value={minPrice}
-            onChange={(value) => setMinPrice(value)}
-            type="number"
-          />
-          <TextField
-            label="Giá tối đa"
-            value={maxPrice}
-            onChange={(value) => setMaxPrice(value)}
-            type="number"
-          />
-          <Button onClick={handleSearch} primary>
-            Tìm kiếm
-          </Button>
-        </div>
-      </Card>
-
-      <ResourceList
-        resourceName={{ singular: "product", plural: "products" }}
-        items={products}
-        renderItem={(item: Product) => (
-          <ResourceList.Item id={item.id}>
-            <h3>
-              <strong>{item.title}</strong>
-            </h3>
-            <div>Giá: {item.variants?.edges?.[0]?.node.price || "N/A"}</div>
-            <div>Trạng thái: {item.status}</div>
-            <Button>Edit</Button>
-            <Button destructive>Xoá</Button>
-          </ResourceList.Item>
-        )}
-      />
-
-      {nextCursor && (
-        <Button onClick={loadMoreProducts} loading={fetcher.state === "loading"}>
-          Tải thêm
-        </Button>
-      )}
+    <Page primaryAction={{ content: "Save", disabled: true }} title="Danh sách sản phẩm">
+      <IndexFiltersDefaultExample products={products} />
+      <PaginationExample onPrevious={onPrevious} onNext={onNext} />
     </Page>
   );
 }
